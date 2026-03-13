@@ -1,0 +1,17 @@
+{
+    "embed_dim": 768,
+    "custom_text": true,
+    "init_logit_bias": -10,
+    "vision_cfg": {
+        "image_size": 224,
+        "timm_model_name": "vit_base_patch16_siglip_224",
+        "timm_model_pretrained": true,
+        "timm_pool": "map",
+        "timm_proj": "none"
+    },
+    "text_cfg": {
+        "hf_model_name": "microsoft/mdeberta-v3-base",
+        "hf_tokenizer_name": "mdeberta-v3-base",
+        "hf_pooler_type": "mean_pooler"
+    }
+}
