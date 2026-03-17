@@ -1,65 +1,25 @@
+# Paper
+H. X. Pham, D. Hoffmann, R. Guerrero and B. Martinez, **No Hard Negatives Required: Concept Centric Learning Leads to Compositionality without Degrading Zero-shot Capabilities of Contrastive Models**, CVPR 2026.
 
-## Training
+# Data preparation
+We train C2LIP on CC3m dataset, with new captions from DreamLIP. Follow the instructions in "data_processing/README.md" to prepare the data, ready for training.
 
-To train a CLIP model, first, we need to generate the BLIP2 captions. For this, please refer to the `captioning/README.md` file.
-
-When the generation is done, and we have our captions as a JSON file, we can use them to train our model. First, install the repository using the following command:
-```bash
-pip install -e .
+# Environment
+Our code is derived from the common Open_CLIP github repo, so if you have an exising environment prepared for Open_CLIP, our code should work out of the box. Otherwise, please install the Python libraries from
+```
+pip install -r requirements-training.txt
 ```
 
-Then, to train, we can either use the JSON file as-is if the number of images is not too large, or we can use the script `add_captions_to_tar.py` in `captioning/` to add the captions to the tar files.
-
-To launch training on 8 GPUs using a JSON file as input, we can use the following command:
-
-```bash
-torchrun --nproc_per_node 8 --nnodes=1 -m training.main \
-        --data-path SAVE_PATH/blip2_caption.json --image-dir-path FULL_PATH/ \
-        --dataset-type 'json' \
-        --workers 4 \
-        --batch-size 1024 --lr 5e-6 --wd 0.0 --epochs 10 --warmup 1000 \
-        --precision amp \
-        --ddp-static-graph --grad-checkpointing \
-        --model ViT-B-16-SigLIP --pretrained webli --lock-image \
-        --siglip \
-        --save-frequency 1 \
-        --zeroshot-frequency 1 \
-        --imagenet-val IMAGENET_PATH/images/val/ \
-        --use-pseudo-labels --distill-model ViT-B-16-SigLIP --distill-pretrained webli \
-        --num-captions 3 \
-        --logs ./logs \
-        --name 'training-run'
+# Launch training
+The scripts are in "scripts" folder. Set the correct paths before you launch the code.
+- If you prepare data in Webdataset format
 ```
-with `SAVE_PATH/blip2_caption.json` as the path to the JSON file containing BLIP2 generated captions, and `FULL_PATH/` as the path to the images. The model will be saved at `./logs/training-run/checkpoints`. Also, set `IMAGENET_PATH` as the path to the validation set in case you want to evaluate on zero-shot classification during training; otherwise, remove this argument.
-
-If the captions were packed into a webdataset, replace 
-```bash
---train-data SAVE_PATH/blip2_caption.json --images-dir-path FULL_PATH/ \
---dataset-type 'json' \
+cd scripts
+bash train_full_model_wds_data.sh
 ```
-with 
-```bash
---train-data 'FULL_PATH/{000000..000100}.tar' \
---dataset-type 'webdataset' --dataset-resampled --train-num-samples NUM_SAMPLES  \
+
+- If you prepare data in separate caption PKL & image dirs
 ```
-with `NUM_SAMPLES` as the number of samples in the webdataset to be specified.
-
-Train on CC3m dataset for 3 epochs
-
-```bash
-torchrun --nproc_per_node 4 --nnodes=1 -m training.main \
-        --train-data '/home/SERILOCAL/hai.xuanpham/datasets/cc3m_wd/{000000000..000002876}.tar' \
-        --dataset-type 'webdataset' --dataset-resampled --train-num-samples 2876999  \
-        --workers 4 \
-        --batch-size 1024 --lr 5e-7 --wd 0.0 --epochs 3 --warmup 1000 \
-        --precision amp \
-        --ddp-static-graph --grad-checkpointing \
-        --model ViT-B-16-SigLIP --pretrained webli --lock-image \
-        --siglip \
-        --save-frequency 1 \
-        --zeroshot-frequency 1 \
-        --use-pseudo-labels --distill-model ViT-B-16-SigLIP --distill-pretrained webli \
-        --num-captions 1 \
-        --logs ./logs \
-        --name 'training-run-cc3m-3ep-lr5e-7'
+cd scripts
+bash train_full_model_pkl_data.sh
 ```

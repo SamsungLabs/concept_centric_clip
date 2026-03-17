@@ -61,7 +61,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "synthetic", "auto", "npy", "json", "cc3m_custom", "cc30m_custom", "cc30m_custom_hn_np"],
+        choices=["webdataset", "csv", "synthetic", "auto", "npy", "json", "cc3m_custom_np", "cc3m_custom_np_wds"],
         help="Which type of dataset to process."
     )
     parser.add_argument(
@@ -490,114 +490,29 @@ def parse_args(args):
 
     ############# NEW ###############
     parser.add_argument(
-        "--cc3m-captions",
-        type=str,
-        default=None,
-        help="Path to pickled CC3m caption with hard negatives",
-    )
-    parser.add_argument(
-        "--hardnegative",
-        default=False,
-        action="store_true",
-        help="Whether to use da examples to compute clip loss"
-    )
-    parser.add_argument(
-        "--threshold-type",
-        choices=["mean", "max","fixed"],
-        default="mean",
-        help="how to compute threshold"
-    )
-    parser.add_argument(
-        "--fixed-threshold-value",
-        type=float,
-        default=2.0,
-        help="fixed threshold value"
-    )
-    parser.add_argument(
-        "--upper-bound",
-        type=int,
-        default=10,
-        help="clamp upper bound for threshold"
-    )
-    parser.add_argument(
-        "-imc",
-        "--imc-loss",
-        default=False,
-        action="store_true",
-        help="whether to use imc loss"
-    )
-    parser.add_argument(
-        "--imc-loss-weight",
-        type=float,
-        default=0.2,
-    )
-    parser.add_argument(
-        "-cmr",
-        "--cmr-loss",
-        default=False,
-        action="store_true",
-        help="Whether to use cmr loss"
-    )
-    parser.add_argument(
-        "--cmr-loss-weight",
-        type=float,
-        default=0.2,
-    )
-    parser.add_argument(
         "--output-tokens",
         default=False,
         action="store_true",
-        help="flag the vision and text encoders to return token features"
+        help="flag the vision encoder to return token features"
     )
+    
     parser.add_argument(
         "--force-siglip-preprocess", action="store_true", default=False,
     )
-    ########## SCAN loss ##########
-    parser.add_argument("--scan-loss", default=False, action="store_true", help="Use SCAN loss")
-    parser.add_argument("--scan-loss-weight", type=float, default=1.)
-    parser.add_argument("--scan-feature-norm", type=str, choices=["clipped_l2norm", "softmax", "l2norm", "l1norm", "clipped_l1norm", "clipped", "no_norm"], default="clipped_l2norm")
-    parser.add_argument("--scan-agg-func", type=str, choices=["LogSumExp", "LogSumExp_norm", "Max", "Sum", "Mean"], default="LogSumExp_norm")
-    parser.add_argument("--scan-lambda-lse", type=float, default=6.)
-    parser.add_argument("--scan-lambda-softmax", type=float, default=9.)
-    parser.add_argument("--scan-loss-type", type=str, default="sigmoid", choices=["sigmoid", "hinge"])
-    parser.add_argument("--scan-margin", type=float, default=0.2)
-    parser.add_argument("--scan-hard-negative", default=False, action="store_true")
-    parser.add_argument("--scan-ce-hard-negative", default=False, action="store_true")
-
+    
     ########## Noun-phrase loss ##########
-    parser.add_argument("--np-loss", default=False, action="store_true", help="enable Noun-phrase loss - including 3 sub-objectives")
-    parser.add_argument("--without-instance-np-loss", dest="np_instance_loss", default=True, action="store_false", help="disable noun-phrase instance level loss")
-    parser.add_argument("--without-token-np-loss", dest="np_token_loss", default=True, action="store_false", help="disable noun-phrase token level loss")
-    parser.add_argument("--without-np-intramodal-loss", dest="np_intramodal", default=True, action="store_false", help="disable intromodal noun-phrase loss")
-    parser.add_argument("--np-intramodal-loss-scale", type=float, default=0.01)
-    parser.add_argument("--np-token-loss-scale", type=float, default=1)
-    parser.add_argument("--np-loss-weight", type=float, default=1., help="weight of Noun-phrase loss")
-    parser.add_argument("--np-token-token-loss", dest="np_token_token_loss", default=False, action="store_true")
-    parser.add_argument("--np-token-token-loss-scale", type=float, default=1.)
-    parser.add_argument("--np-flair-loss", dest="np_flair_loss", default=False, action="store_true")
-    parser.add_argument("--np-flair-loss-scale", type=float, default=1.)
-    parser.add_argument("--np-hard-negative-loss", dest="np_hard_negative_loss", default=False, action="store_true")
-    parser.add_argument("--np-hard-negative-loss-scale", type=float, default=1.)
-    parser.add_argument("--np-hard-negative-flair-loss", dest="np_hard_negative_flair_loss", default=False, action="store_true")
-    parser.add_argument("--np-hard-negative-flair-loss-scale", type=float, default=1.)
-    parser.add_argument("--hn-np-balance", default=False, action="store_true")
-
-
-    ########## FLAIR loss ##########
-    parser.add_argument("--flair-loss", default=False, action="store_true", help="enable Noun-phrase loss - including 3 sub-objectives")
-    parser.add_argument("--flair-loss-scale", type=float, default=1.)
+    parser.add_argument("--npc-loss", default=False, action="store_true", help="enable nounphrase NPC loss")
+    parser.add_argument("--npc-loss-scale", type=float, default=1., help="weight of Noun-phrase NPC loss")
+    parser.add_argument("--xac-loss", dest="np_flair_loss", default=False, action="store_true", help="enable cross-attended nounphrase XAC loss")
+    parser.add_argument("--xac-loss-scale", type=float, default=0.01)
+    
 
     ################################
     parser.add_argument("--loss-feature-norm", default=False, action="store_true", help="normalize features in loss function instead")
 
-    parser.add_argument("--use-original-caption", default=False, action="store_true", help="use original cc3m caption")
-
     ################## END NEW ###############
 
     args = parser.parse_args(args)
-
-    if args.dataset_type == "cc3m_custom":
-        assert args.cc3m_captions is not None and args.train_data is not None, "Must provide both WDS root dir and Augmented caption pickle"
 
     if args.dataset_type == "json":
         assert args.images_dir_path is not None, "Must specify --image-dir-path if using JSON file of BLIP2 generated captions."
@@ -614,29 +529,11 @@ def parse_args(args):
     for name, val in default_params.items():
         if getattr(args, name) is None:
             setattr(args, name, val)
+    
     ####### new ######
-    if args.hardnegative or args.imc_loss or args.cmr_loss or args.scan_ce_hard_negative:
-        print("using extra data-augmented data to train the model")
-        args.extra_da=True
-    else:
-        args.extra_da=False
-
-    # if args.accum_freq != 1 and args.extra_da:
-    #     raise ValueError("Currently CE-CLIP does not support gradient accumulation")
-
-    if not args.np_loss:
-        args.np_instance_loss = False
-        args.np_token_loss = False
-        args.np_intramodal = False
+    if args.xac_loss and not args.output_tokens:
+        print("If XAC loss is used, must also enable [--output_tokens] option. This flag will now be enabled.")
+        args.output_tokens = True
     
-    if (args.scan_loss or args.np_flair_loss or args.np_hard_negative_flair_loss or args.flair_loss or args.np_token_loss or args.np_token_token_loss) and not args.output_tokens:
-        raise ValueError("If SCAN loss or FLAIR loss is used, must also enable [output_tokens] option")
-    
-    if args.np_loss and (not args.np_instance_loss) and (not args.np_token_loss) and (not args.np_intramodal) and (not args.np_token_token_loss) and (not args.np_flair_loss) and (not args.np_hard_negative_flair_loss):
-        raise ValueError("At least one option of NP loss must be enabled")
-    
-    # if args.np_loss and (args.np_token_loss or args.np_token_token_loss or args.np_flair_loss or args.np_flair_loss or args.np_hard_negative_flair_loss):
-    #     args.output_tokens = True
-
     ##################
     return args

@@ -13,7 +13,7 @@ from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .model import CLIP, CustomTextCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
     resize_pos_embed, get_cast_dtype, resize_text_pos_embed, set_model_preprocess_cfg
 from .coca_model import CoCa
-from .loss import ClipLoss, DistillClipLoss, CoCaLoss, SigLipLoss, FilteredSigLipLoss, Clip_DA_Loss, SigLip_DA_Loss
+from .loss import ClipLoss, DistillClipLoss, CoCaLoss, SigLipLoss, FilteredSigLipLoss, C2LIP_Loss
 from .openai import load_openai_model
 from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained,\
     list_pretrained_tags_by_model, download_pretrained_from_hf
@@ -324,71 +324,29 @@ def create_model(
 def create_loss(args):
 
     #####################################
-    if args.extra_da or args.output_tokens or args.np_loss or args.scan_loss or args.flair_loss:
-        if args.siglip:
-            loss = SigLip_DA_Loss(
-                    local_loss=args.local_loss,
-                    gather_with_grad=args.gather_with_grad,
-                    cache_labels=True,
-                    rank=args.rank,
-                    world_size=args.world_size,
-                    use_horovod=args.horovod,
-                    # CLIP-DA losses
-                    cmr_loss=args.cmr_loss,
-                    imc_loss=args.imc_loss,
-                    imc_loss_weight=args.imc_loss_weight,
-                    cmr_loss_weight=args.cmr_loss_weight,
-                    threshold_type=args.threshold_type,
-                    hardnegative=args.hardnegative,
-                    # SCAN loss
-                    scan_loss=args.scan_loss,
-                    scan_loss_weight=args.scan_loss_weight,
-                    scan_feature_norm=args.scan_feature_norm,
-                    scan_agg_func=args.scan_agg_func,
-                    scan_lambda_lse=args.scan_lambda_lse,
-                    scan_lambda_softmax=args.scan_lambda_softmax,
-                    scan_loss_type=args.scan_loss_type,
-                    scan_hinge_margin=args.scan_margin,
-                    scan_hard_negative=args.scan_hard_negative,
-                    scan_ce_hard_negative=args.scan_ce_hard_negative,
-                    # Nounphrase loss
-                    np_loss=args.np_loss,
-                    np_instance_loss=args.np_instance_loss,
-                    np_token_loss=args.np_token_loss,
-                    np_intramodal_loss=args.np_intramodal,
-                    np_loss_weight=args.np_loss_weight,
-                    np_intramodal_loss_scale=args.np_intramodal_loss_scale,
-                    np_token_loss_scale=args.np_token_loss_scale,
-                    np_token_token_loss=args.np_token_token_loss,
-                    np_token_token_loss_scale=args.np_token_token_loss_scale,
-                    ####################################################
-                    np_flair_loss=args.np_flair_loss,
-                    np_flair_loss_scale=args.np_flair_loss_scale,
-                    np_hard_negative_loss=args.np_hard_negative_loss,
-                    np_hard_negative_loss_scale=args.np_hard_negative_loss_scale,
-                    np_hard_negative_flair_loss=args.np_hard_negative_flair_loss,
-                    np_hard_negative_flair_loss_scale=args.np_hard_negative_flair_loss_scale,
-                    ####################################################
-                    flair_loss=args.flair_loss,
-                    flair_loss_scale=args.flair_loss_scale,
-                    ####################################################
-                    loss_feature_norm=args.loss_feature_norm
-            )
-        else:
-            loss = Clip_DA_Loss(
-                    local_loss=args.local_loss,
-                    gather_with_grad=args.gather_with_grad,
-                    cache_labels=True,
-                    rank=args.rank,
-                    world_size=args.world_size,
-                    use_horovod=args.horovod,
-                    cmr_loss=args.cmr_loss,
-                    imc_loss=args.imc_loss,
-                    imc_loss_weight=args.imc_loss_weight,
-                    cmr_loss_weight=args.cmr_loss_weight,
-                    threshold_type=args.threshold_type,
-                    hardnegative=args.hardnegative,
-            )
+    if args.siglip and (args.npc_loss or args.xac_loss):
+        loss = C2LIP_Loss(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod,
+            # Nounphrase loss
+            npc_loss=args.npc_loss,
+            npc_loss_scale=args.npc_loss_scale,
+            xac_loss=args.np_xac_loss,
+            np_flair_loss_scale=args.np_flair_loss_scale,
+            np_hard_negative_loss=args.np_hard_negative_loss,
+            np_hard_negative_loss_scale=args.np_hard_negative_loss_scale,
+            np_hard_negative_flair_loss=args.np_hard_negative_flair_loss,
+            np_hard_negative_flair_loss_scale=args.np_hard_negative_flair_loss_scale,
+            ####################################################
+            flair_loss=args.flair_loss,
+            flair_loss_scale=args.flair_loss_scale,
+            ####################################################
+            loss_feature_norm=args.loss_feature_norm
+        )
         return loss
     #####################################
 
