@@ -448,14 +448,11 @@ def main(args):
 
     loss = create_loss(args)
 
-    # for CE-CLIP: keep thresholds
-    prev_thresholds = None
-
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        prev_thresholds = train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer, prev_thresholds=prev_thresholds)
+        train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):

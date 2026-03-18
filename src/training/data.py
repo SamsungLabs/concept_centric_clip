@@ -9,6 +9,7 @@ import braceexpand
 from dataclasses import dataclass
 from multiprocessing import Value
 
+import pickle
 import random
 import numpy as np
 import pandas as pd
@@ -711,213 +712,6 @@ def get_synthetic_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None
     return DataInfo(dataloader, sampler)
 
 ######################################################################################
-class NpyDataset(Dataset):
-    def __init__(self,samples_path, transforms=None, train_num_samples=None, tokenizer=None, split=None):
-        if split==None:
-            if 'val' in samples_path:
-                self.split = 'val'
-            else:
-                self.split = 'train'
-        else:
-            self.split = split
-
-        if 'coco' in samples_path:
-            self.data = 'coco'
-        else:
-            self.data = 'cc3m'
-
-        if os.path.isdir(samples_path):
-            # load and merge all splited files in the dir
-            data_file_splits = glob.glob(os.path.join(samples_path,'*.npy'))
-            print(f'merging {len(data_file_splits)} splied files from {samples_path}')
-            self.samples=[]
-            for file_split in data_file_splits:
-                self.samples.extend(self.loadList(file_split))
-        else:
-            # load single splited file fiven the path
-            self.samples = self.loadList(samples_path)
-
-        if train_num_samples:
-            self.samples = self.samples[:train_num_samples]
-        self.transforms = transforms
-        self.tokenize = tokenizer
-
-
-    def loadList(self, file_path):
-        # the filename should mention the extension '.npy'
-        tempNumpyArray = np.load(file_path, allow_pickle=True)
-        return tempNumpyArray.tolist()
-
-
-    def __len__(self):
-        return len(self.samples)
-
-
-    def __getitem__(self,index):
-        captions = torch.stack([self.tokenize([str(self.samples[index]['caption'])])[0],
-                                self.tokenize([str(self.samples[index]['relation_aug_caption'])])[0],
-                                self.tokenize([str(self.samples[index]['adj_aug_caption'])])[0],
-                                self.tokenize([str(self.samples[index]['noun_aug_caption'])])[0],
-                                self.tokenize([str(self.samples[index]['verb_aug_caption'])])[0]])
-        if self.data=='coco':
-            image_id = self.samples[index]['image_id']
-            data_split = 'train2014' if self.split=='train' else "val2014"
-            image_path = os.path.join(COCO_DATASET_ROOT,data_split,f"COCO_{data_split}_{'0'*(12-len(str(image_id)))}{image_id}.jpg")
-            image = self.transforms(Image.open(image_path).convert("RGB"))
-        else:
-            image = self.transforms(Image.open(str(self.samples[index]['image_path'])).convert("RGB"))
-        
-        valid_caption_mask=torch.tensor(self.samples[index]['valid_caption'])
-        
-        return image, captions, valid_caption_mask
-
-
-class HardNegative_Collate:
-    def __call__(self, batch):
-        img = torch.stack([example[0] for example in batch])
-        true_caption = torch.stack([example[1][0] for example in batch])
-        hard_negative = torch.cat([example[1][1:] for example in batch])
-        text = torch.cat([true_caption, hard_negative])
-        valid_caption_mask = torch.stack([example[2] for example in batch])
-        return img, text, valid_caption_mask
-    
-
-def get_npy_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None, **kwargs):
-    input_filename = args.train_data if is_train else args.val_data
-    assert input_filename
-    dataset = NpyDataset(
-        input_filename,
-        preprocess_fn,
-        tokenizer=tokenizer,
-        train_num_samples=args.train_num_samples
-
-    )
-    num_samples = len(dataset)
-    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
-    shuffle = is_train and sampler is None
-    collate=HardNegative_Collate()
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=shuffle,
-        num_workers=args.workers,
-        pin_memory=True,
-        sampler=sampler,
-        drop_last=is_train,
-        collate_fn=collate
-    )
-    dataloader.num_samples = num_samples
-    dataloader.num_batches = len(dataloader)
-
-    return DataInfo(dataloader, sampler)
-
-##################################################################################
-class CC3m_Caption_Loader():
-    def __init__(self, tokenizer, caption_path: str, start_token: int=None, end_token: int=None, 
-                 extra_da: bool = True,
-                 return_token_mask_caption=False, 
-                 return_token_mask_negative=False,
-                 return_nounphrases=False):
-        self.tokenize = tokenizer
-        import pickle
-        with open(caption_path, "rb") as fp:
-            self.captions = pickle.load(fp)
-        
-        self.start_token = start_token
-        self.end_token = end_token
-        self.return_token_mask_caption = return_token_mask_caption
-        self.return_token_mask_negative = return_token_mask_negative
-        self.return_nounphrases = return_nounphrases
-        self.extra_da = extra_da
-
-    
-    def get_valid_token_mask(self, captions: torch.Tensor) -> torch.Tensor:
-        if self.end_token is None:
-            # return equal lengths of MAX_TOKENS (default = 77)
-            return torch.ones_like(captions, type=torch.long)
-        
-        if self.start_token is not None and self.end_token is not None:
-            # openai tokenizer
-            mask = torch.where(captions > 0, 1, 0)
-            mask = torch.where(captions == self.start_token, 0, mask)
-            mask = torch.where(captions == self.end_token, 0, mask)
-        elif self.start_token is None and self.end_token is not None:
-            # siglip T5-based tokenizer
-            # end_token == 1
-            mask = torch.where(captions != self.end_token, 1, 0)
-        else:
-            raise ValueError("the tokenizer format is not supported")
-
-        return mask # (num_captions, max_caption_length)
-
-    
-    def get_item_simple(self, key: str):
-        sample = self.captions[key]
-
-        
-        caption = self.tokenize(str(sample['caption']))[0],
-                                
-        return caption
-
-    
-    def get_item_da(self, key: str):
-        sample = self.captions[key]
-
-        
-        valid_caption_mask = [1] * 5
-        for i, k in enumerate(['caption', 'relation_aug_caption', 'adj_aug_caption', 'noun_aug_caption', 'verb_aug_caption']):
-            if sample[k] == "###":
-                valid_caption_mask[i] = 0
-
-        captions = torch.stack([self.tokenize([str(sample['caption'])])[0],
-                                self.tokenize([str(sample['relation_aug_caption'])])[0],
-                                self.tokenize([str(sample['adj_aug_caption'])])[0],
-                                self.tokenize([str(sample['noun_aug_caption'])])[0],
-                                self.tokenize([str(sample['verb_aug_caption'])])[0]])
-        valid_caption_mask = torch.tensor(valid_caption_mask) #torch.tensor(sample['valid_caption'])
-        # except Exception as error:
-        #     traceback.print_exc()
-        #     print("Sample: ", sample)
-        #     raise RuntimeError
-
-        # get the lengths -> token_mask
-        if self.return_token_mask_caption and self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions)
-        elif self.return_token_mask_caption:
-            token_mask = self.get_valid_token_mask(captions[0:1, :])
-        elif self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions[1:, :])
-        else:
-            token_mask = None
-
-        # get nounphrases if available
-        noun_phrases = None
-        if self.return_nounphrases and "nounphrases" in sample:
-            nps = sample['nounphrases']
-            if len(nps) == 0:
-                nps = [str(sample["caption"])] # so training does not fail when there's no nounphrase
-            noun_phrases = self.tokenize(nps)
-            noun_phrases_mask = self.get_valid_token_mask(noun_phrases)
-        
-        # Done. Returning
-        if token_mask is not None and noun_phrases is not None:
-            ret = (captions, valid_caption_mask, token_mask, noun_phrases, noun_phrases_mask)
-        elif token_mask is not None:
-            ret = (captions, valid_caption_mask, token_mask)
-        elif noun_phrases is not None:
-            ret = (captions, valid_caption_mask, noun_phrases, noun_phrases_mask)
-        else:
-            ret = (captions, valid_caption_mask)
-
-        return ret
-    
-    
-    def __call__(self, key: str):
-        if self.extra_da:
-            return self.get_item_da(key)
-        else:
-            return self.get_item_simple(key)
-
 
 # special data collate function for custom CC3m dataset
 def simple_collate_fn(batch):
@@ -926,358 +720,138 @@ def simple_collate_fn(batch):
     return [img, caption]
 
 
-class CC3m_custom_collate_fn():
-    def __init__(self, return_token_mask=False, return_nounphrases=False, return_negative_nounphrases=False):
-        self.return_token_mask = return_token_mask
+######################################################################################
+"""
+Collate function for CC3m-np custom dataset. 
+It returns either (images, captions) or (images, captions, nounphrases, nounphrase_indices)
+"""
+class CC3m_custom_np_collate_fn():
+    def __init__(self, return_nounphrases=False):
         self.return_nounphrases = return_nounphrases
-        self.return_negative_nounphrases = return_negative_nounphrases
-
+        
 
     def __call__(self, batch):
         """
-        Returning a tuple X
-        - Fixed outputs:
-            X[0]: img
-            X[1]: text
-            X[2]: valid_caption_mask
-        - Variable outputs:
-            - If return_token_mask == True and return_nounphrases == True
-                X[3] = token_mask
-                X[4] = noun_phrases
-                X[5] = noun_phrases_sample_indices
-            - If return_token_mask == False and return_nounphrases == True
-                X[3] = noun_phrases
-                X[4] = noun_phrases_sample_indices
-            - If return_token_mask == True and return_nounphrases == False
-                X[3] = token_mask
+        Input:
+            batch: list of tuple (image, (caption, nounphrases))
+        Return:
+            (image, caption_tokens) if return_nounphrase == False
+            (image, caption_tokens, nounphrases_tokens, nounphrase_indices) if return_nounphrase == True
         """
-        # for CE-CLIP data
-        img = torch.stack([example[0] for example in batch])
-        true_caption = torch.stack([example[1][0][0] for example in batch])
-        hard_negative = torch.cat([example[1][0][1:] for example in batch])
-        text = torch.cat([true_caption, hard_negative])
-        valid_caption_mask = torch.stack([example[1][1] for example in batch])
+        imgs = torch.stack([example[0] for example in batch])
+        captions = torch.stack([example[1][0] for example in batch])
         
-        ret = [img, text, valid_caption_mask]
-
-        # check for data structure
-        if self.return_nounphrases and self.return_negative_nounphrases and self.return_token_mask and len(batch[0][1]) != 7:
-            raise ValueError(f"The batch does not contain correct data. Expecting 7 item, received {len(batch[0][1])} items.")
-        if self.return_nounphrases and self.return_negative_nounphrases and not self.return_token_mask and len(batch[0][1]) != 6:
-            raise ValueError(f"The batch does not contain correct data. Expecting 6 item, received {len(batch[0][1])} items.")
-        if self.return_nounphrases and self.return_token_mask and not self.return_negative_nounphrases and len(batch[0][1]) != 5:
-            raise ValueError(f"The batch does not contain correct data. Expecting 5 item, received {len(batch[0][1])} items.")
-        if self.return_nounphrases and not self.return_token_mask and not self.return_negative_nounphrases and len(batch[0][1]) != 4:
-            raise ValueError(f"The batch does not contain correct data. Expecting 4 item, received {len(batch[0][1])} items.")
-        if not self.return_nounphrases and self.return_token_mask and len(batch[0][1]) != 3:
-            raise ValueError(f"The batch does not contain correct data. Expecting 3 item, received {len(batch[0][1])} items.")
-        
-        # get token_mask (for text lengths)
-        if self.return_token_mask:
-            # there's valid token mask
-            if batch[0][1][2].shape[0] == 1 or batch[0][1][2].shape[0] == 4: # only true captions or negative captions
-                token_mask = torch.cat([example[1][2] for example in batch])
-            else:
-                true_caption_token_mask = torch.stack([example[1][2][0] for example in batch])
-                negative_caption_token_mask = torch.cat([example[1][2][1:] for example in batch])
-                token_mask = torch.cat((true_caption_token_mask, negative_caption_token_mask), dim=0)
-            ret.append(token_mask)
-        
-        # get nounphrases
         if self.return_nounphrases:
-            if not self.return_token_mask:
-                nounphrases = [example[1][2] for example in batch]
-                nounphrases_token_mask = [example[1][3] for example in batch]
-            else:
-                nounphrases = [example[1][3] for example in batch]
-                nounphrases_token_mask = [example[1][4] for example in batch]
-            sample_indices = []
+            nounphrases = [example[1][1] for example in batch]
+            nounphrase_indices = []
             for i, nps in enumerate(nounphrases):
-                sample_indices.extend([i]*len(nps))
-            sample_indices = torch.tensor(sample_indices)
+                nounphrase_indices.extend([i]*len(nps))
+            nounphrase_indices = torch.tensor(nounphrase_indices)
             nounphrases = torch.cat(nounphrases, dim=0)
-            nounphrases_token_mask = torch.cat(nounphrases_token_mask, dim=0)
-            ret.append(nounphrases)
-            ret.append(nounphrases_token_mask)
-            ret.append(sample_indices)
-
-        if self.return_negative_nounphrases:
-            if not self.return_token_mask:
-                hn_nounphrases = [example[1][4] for example in batch]
-                hn_nounphrases_token_mask = [example[1][5] for example in batch]
-            else:
-                hn_nounphrases = [example[1][5] for example in batch]
-                hn_nounphrases_token_mask = [example[1][6] for example in batch]
-            ret_hn_sample_indices = []
-            ret_hn_nps = []
-            ret_hn_np_token_mask = []
-            for i, nps in enumerate(hn_nounphrases):
-                if isinstance(nps, list) and len(nps) == 0:
-                    continue
-                ret_hn_nps.append(nps)
-                ret_hn_np_token_mask.append(hn_nounphrases_token_mask[i])
-                ret_hn_sample_indices.extend([i]*len(nps))
-            ret_hn_sample_indices = torch.tensor(ret_hn_sample_indices)
-            hn_nounphrases = torch.cat(ret_hn_nps, dim=0)
-            hn_nounphrases_token_mask = torch.cat(ret_hn_np_token_mask, dim=0)
-            ret.append(hn_nounphrases)
-            ret.append(hn_nounphrases_token_mask)
-            ret.append(ret_hn_sample_indices)
-        
-        return tuple(ret)
-
-
-def get_cc3m_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None, **kwargs):
-    assert args.cc3m_captions is not None and Path(args.cc3m_captions).exists()
-    #print("Load CC3m custom dataset")
-
-    start_token = None
-    end_token = None
-    
-    if args.model == "ViT-B-32" and args.pretrained == "openai":
-        start_token = 49406
-        end_token = 49407
-    elif args.model == "ViT-B-16-SigLIP": # and args.pretrained == "webli":
-        end_token = 1
-    else:
-        if args.output_tokens:
-            raise RuntimeError(f"{args.model} from {args.pretrained} do not support returning raw token features")
-    
-    return_token_mask_caption = args.scan_loss
-    return_nounphrases = args.np_loss
-    complex_loader_mode = args.extra_da or args.np_loss or args.output_tokens
-
-    caption_loader = CC3m_Caption_Loader(tokenizer=tokenizer, 
-                                         caption_path=args.cc3m_captions,
-                                         start_token=start_token,
-                                         end_token=end_token,
-                                         return_token_mask_caption=return_token_mask_caption,
-                                         return_token_mask_negative=return_token_mask_caption,
-                                         return_nounphrases=return_nounphrases,
-                                         extra_da=complex_loader_mode)
-
-    input_shards = args.train_data if is_train else args.val_data
-    assert input_shards is not None
-    resampled = getattr(args, 'dataset_resampled', False) and is_train
-
-    num_samples, num_shards = get_dataset_size(input_shards)
-    if not num_samples:
-        if is_train:
-            num_samples = args.train_num_samples
-            if not num_samples:
-                raise RuntimeError(
-                    'Currently, number of dataset samples must be specified for training dataset. '
-                    'Please specify via `--train-num-samples` if no dataset length info present.')
+            return imgs, captions, nounphrases, nounphrase_indices
         else:
-            num_samples = args.val_num_samples or 0  # eval will just exhaust the iterator if not specified
+            return imgs, captions
 
-    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
+
+class CC3m_NP_PKL_Dataset(Dataset):
+    def __init__(self, pkl_file_path: str, image_dir_path: str, transforms=None, train_num_samples=None, tokenizer=None):
+        self.image_dir_path = Path(image_dir_path)
+        
+        samples = pickle.load(open(pkl_file_path, "rb"))
+        samples = list(samples.values())
+        samples.sort(key=lambda x: x["sample_index"])
+        self.samples = samples
+
+        if train_num_samples:
+            self.samples = self.samples[:train_num_samples]
+
+        self.transforms = transforms
+        self.tokenize = tokenizer
+
+
+    def __len__(self):
+        return len(self.samples)
+
+
+    def __getitem__(self,index):
+        """
+        Return:
+            image tensor
+            caption token tensor (1D)
+            nounphrase token tensor (2D)
+        """
+        sample = self.samples[index]
+        image_path = str(self.image_dir_path / sample["image_path"])
+        image = self.transforms(Image.open(image_path).convert("RGB"))
+
+        caption = sample["captions"]["shortLLA_captions"]
+        caption = self.tokenize(caption)[0]
+
+        nounphrases = sample["caption"]["nounphrases"]
+        if not nounphrases:
+            nounphrases = [caption]
+        nounphrases = self.tokenize(nounphrases)
+        
+        return image, [caption, nounphrases]
     
-    if resampled:
-        pipeline = [ResampledShards2(input_shards, deterministic=True, epoch=shared_epoch)]
-    else:
-        pipeline = [wds.SimpleShardList(input_shards)]
 
-    # at this point we have an iterator over all the shards
-    if is_train:
-        if not resampled:
-            pipeline.extend([
-                detshuffle2(
-                    bufsize=_SHARD_SHUFFLE_SIZE,
-                    initial=_SHARD_SHUFFLE_INITIAL,
-                    seed=args.seed,
-                    epoch=shared_epoch,
-                ),
-                wds.split_by_node,
-                wds.split_by_worker,
-            ])
-        pipeline.extend([
-            # at this point, we have an iterator over the shards assigned to each worker at each node
-            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
-            wds.shuffle(
-                bufsize=_SAMPLE_SHUFFLE_SIZE,
-                initial=_SAMPLE_SHUFFLE_INITIAL,
-            ),
-        ])
-    else:
-        pipeline.extend([
-            wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
-            wds.tarfile_to_samples(handler=log_and_continue),
-        ])
-    pipeline.extend([
-        wds.select(filter_no_caption_or_no_image),
-        wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(image="jpg;png;jpeg;webp", text="__key__"),
-        wds.map_dict(image=preprocess_img, text=caption_loader),
-        wds.to_tuple("image", "text"),
-        wds.batched(args.batch_size, partial=not is_train, 
-                    collation_fn=CC3m_custom_collate_fn(return_token_mask=return_token_mask_caption, 
-                                                        return_nounphrases=return_nounphrases)
-                    ) if complex_loader_mode else wds.batched(args.batch_size, partial=not is_train, collation_fn=simple_collate_fn),
-    ])
+def get_cc3m_custom_np_pkl_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None, **kwargs):
+    pkl_file = args.train_data
+    image_dir = args.images_dir_path
 
-    dataset = wds.DataPipeline(*pipeline)
-    if is_train:
-        if not resampled:
-            assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
-        # roll over and repeat a few samples to get same number of full batches on each node
-        round_fn = math.floor if floor else math.ceil
-        global_batch_size = args.batch_size * args.world_size
-        num_batches = round_fn(num_samples / global_batch_size)
-        num_workers = max(1, args.workers)
-        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
-        num_batches = num_worker_batches * num_workers
-        num_samples = num_batches * global_batch_size
-        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
-    else:
-        # last batches are partial, eval is done on single (master) node
-        num_batches = math.ceil(num_samples / args.batch_size)
+    assert pkl_file
+    assert image_dir
 
-    dataloader = wds.WebLoader(
-        dataset,
-        batch_size=None,
-        shuffle=False,
-        num_workers=args.workers,
-        persistent_workers=True,
+    dataset = CC3m_NP_PKL_Dataset(
+        pkl_file_path=pkl_file,
+        image_dir_path=image_dir,
+        transforms=preprocess_fn,
+        tokenizer=tokenizer,
+        train_num_samples=args.train_num_samples
     )
 
-    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
-    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
-    # if is_train:
-    #     # roll over and repeat a few samples to get same number of full batches on each node
-    #     global_batch_size = args.batch_size * args.world_size
-    #     num_batches = math.ceil(num_samples / global_batch_size)
-    #     num_workers = max(1, args.workers)
-    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
-    #     num_samples = num_batches * global_batch_size
-    #     dataloader = dataloader.with_epoch(num_batches)
-    # else:
-    #     # last batches are partial, eval is done on single (master) node
-    #     num_batches = math.ceil(num_samples / args.batch_size)
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+    return_nounphrases = args.xac_loss or args.npc_loss
+    collate_fn = CC3m_custom_np_collate_fn(return_nounphrases=return_nounphrases)
 
-    # add meta-data to dataloader instance for convenience
-    dataloader.num_batches = num_batches
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+        collate_fn=collate_fn
+    )
     dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
 
-    return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
+    return DataInfo(dataloader, sampler)
 
 ######################################################################################
-"""
-New custom data loader for newly packed cc30m dataset
-"""
-class CC30mJsonProcessor():
-    def __init__(self, tokenizer, start_token: int=None, end_token: int=None, 
-                 extra_da: bool = True,
-                 return_token_mask_caption=False, 
-                 return_token_mask_negative=False,
-                 return_nounphrases=False):
-        self.tokenize = tokenizer
-        
-        self.start_token = start_token
-        self.end_token = end_token
-        self.return_token_mask_caption = return_token_mask_caption
-        self.return_token_mask_negative = return_token_mask_negative
-        self.return_nounphrases = return_nounphrases
-        self.extra_da = extra_da
-    
-
-    def get_valid_token_mask(self, captions: torch.Tensor) -> torch.Tensor:
-        if self.end_token is None:
-            # return equal lengths of MAX_TOKENS (default = 77)
-            return torch.ones_like(captions, type=torch.long)
-        
-        if self.start_token is not None and self.end_token is not None:
-            # openai tokenizer
-            mask = torch.where(captions > 0, 1, 0)
-            mask = torch.where(captions == self.start_token, 0, mask)
-            mask = torch.where(captions == self.end_token, 0, mask)
-        elif self.start_token is None and self.end_token is not None:
-            # siglip T5-based tokenizer
-            # end_token == 1
-            mask = torch.where(captions != self.end_token, 1, 0)
-        else:
-            raise ValueError("the tokenizer format is not supported")
-
-        return mask # (num_captions, max_caption_length)
-    
-
-    def get_item_simple(self, json_data):
-        caption = str(json_data["short_caption"])
-        caption = self.tokenize(caption)[0],     
-        return caption
-    
-
-    def get_item_da(self, json_data):
-        captions = torch.stack([self.tokenize([str(json_data['short_caption'])])[0],
-                                self.tokenize([str(json_data['relation_aug_caption'])])[0],
-                                self.tokenize([str(json_data['adj_aug_caption'])])[0],
-                                self.tokenize([str(json_data['noun_aug_caption'])])[0],
-                                self.tokenize([str(json_data['verb_aug_caption'])])[0]])
-        valid_caption_mask = torch.tensor(json_data["valid_caption"])
-
-        if self.return_token_mask_caption and self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions)
-        elif self.return_token_mask_caption:
-            token_mask = self.get_valid_token_mask(captions[0:1, :])
-        elif self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions[1:, :])
-        else:
-            token_mask = None
-
-        # get nounphrases if available
-        noun_phrases = None
-        if self.return_nounphrases and "nounphrases" in json_data:
-            nps = json_data['nounphrases']
-            if len(nps) == 0:
-                nps = [str(json_data["short_caption"])] # so training does not fail when there's no nounphrase
-            noun_phrases = self.tokenize(nps)
-            noun_phrases_mask = self.get_valid_token_mask(noun_phrases)
-        
-        # Done. Returning
-        if token_mask is not None and noun_phrases is not None:
-            ret = (captions, valid_caption_mask, token_mask, noun_phrases, noun_phrases_mask)
-        elif token_mask is not None:
-            ret = (captions, valid_caption_mask, token_mask)
-        elif noun_phrases is not None:
-            ret = (captions, valid_caption_mask, noun_phrases, noun_phrases_mask)
-        else:
-            ret = (captions, valid_caption_mask)
-
-        return ret
-    
+class CC3m_np_json_processor():
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
 
     def __call__(self, json_data):
-        if self.extra_da:
-            return self.get_item_da(json_data)
-        else:
-            return self.get_item_simple(json_data)
+        caption = json_data["shortLLA_captions"]
+        nounphrases = json_data["nounphrases"]
+        if not nounphrases:
+            nounphrases = [caption]
+
+        caption = self.tokenizer(caption)[0]
+        nounphrases = self.tokenizer(nounphrases)
+
+        return (caption, nounphrases)
 
 
-def get_cc30m_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None, **kwargs):
-    start_token = None
-    end_token = None
-    
-    if args.model == "ViT-B-32" and args.pretrained == "openai":
-        start_token = 49406
-        end_token = 49407
-    elif args.model == "ViT-B-16-SigLIP": # and args.pretrained == "webli":
-        end_token = 1
-    else:
-        if args.output_tokens:
-            raise RuntimeError(f"{args.model} from {args.pretrained} do not support returning raw token features")
-    
-    return_token_mask_caption = args.scan_loss
-    return_nounphrases = args.np_loss
-    complex_loader_mode = args.extra_da or args.np_loss or args.output_tokens
-
-    caption_loader = CC30mJsonProcessor(tokenizer=tokenizer, 
-                                        start_token=start_token,
-                                        end_token=end_token,
-                                        return_token_mask_caption=return_token_mask_caption,
-                                        return_token_mask_negative=return_token_mask_caption,
-                                        return_nounphrases=return_nounphrases,
-                                        extra_da=complex_loader_mode)
+def get_cc3m_custom_np_wds_dataset(args, preprocess_fn, is_train, epoch=0, floor=False, tokenizer=None, **kwargs):
+    return_nounphrases = args.npc_loss or args.xac_loss
+    json_processor = CC3m_np_json_processor(tokenizer=tokenizer)
+    collate_fn = CC3m_custom_np_collate_fn(return_nounphrases=return_nounphrases)
 
     input_shards = args.train_data if is_train else args.val_data
     assert input_shards is not None
@@ -1295,7 +869,7 @@ def get_cc30m_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=Fals
             num_samples = args.val_num_samples or 0  # eval will just exhaust the iterator if not specified
 
     shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
-    
+
     if resampled:
         pipeline = [ResampledShards2(input_shards, deterministic=True, epoch=shared_epoch)]
     else:
@@ -1332,12 +906,10 @@ def get_cc30m_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=Fals
         wds.select(filter_no_caption_or_no_image),
         wds.decode("pilrgb", handler=log_and_continue),
         wds.rename(image="jpg;png;jpeg;webp", text="json"),
-        wds.map_dict(image=preprocess_img, text=caption_loader),
+        wds.map_dict(image=preprocess_fn, text=json_processor),
         wds.to_tuple("image", "text"),
         wds.batched(args.batch_size, partial=not is_train, 
-                    collation_fn=CC3m_custom_collate_fn(return_token_mask=return_token_mask_caption, 
-                                                        return_nounphrases=return_nounphrases)
-                    ) if complex_loader_mode else wds.batched(args.batch_size, partial=not is_train, collation_fn=simple_collate_fn),
+                    collation_fn=collate_fn),
     ])
 
     dataset = wds.DataPipeline(*pipeline)
@@ -1365,312 +937,6 @@ def get_cc30m_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=Fals
         persistent_workers=True,
     )
 
-    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
-    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
-    # if is_train:
-    #     # roll over and repeat a few samples to get same number of full batches on each node
-    #     global_batch_size = args.batch_size * args.world_size
-    #     num_batches = math.ceil(num_samples / global_batch_size)
-    #     num_workers = max(1, args.workers)
-    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
-    #     num_samples = num_batches * global_batch_size
-    #     dataloader = dataloader.with_epoch(num_batches)
-    # else:
-    #     # last batches are partial, eval is done on single (master) node
-    #     num_batches = math.ceil(num_samples / args.batch_size)
-
-    # add meta-data to dataloader instance for convenience
-    dataloader.num_batches = num_batches
-    dataloader.num_samples = num_samples
-
-    return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
-
-
-######################################################################################
-"""
-New custom data loader for newly packed cc30m dataset - with NEGATIVE NOUNPHRASES
-"""
-class CC30mJsonProcessor_hn_np():
-    def __init__(self, tokenizer, start_token: int=None, end_token: int=None, 
-                 extra_da: bool = True,
-                 return_token_mask_caption=False, 
-                 return_token_mask_negative=False,
-                 return_nounphrases=False,
-                 return_negative_nounphrases=False,
-                 hn_np_balance=False,
-                 use_original_caption=False):
-        self.tokenize = tokenizer
-        
-        self.start_token = start_token
-        self.end_token = end_token
-        self.return_token_mask_caption = return_token_mask_caption
-        self.return_token_mask_negative = return_token_mask_negative
-        self.return_nounphrases = return_nounphrases
-        self.return_negative_nounphrases = return_negative_nounphrases
-        self.extra_da = extra_da
-        self.hn_np_balance = hn_np_balance
-        self.use_original_caption = use_original_caption
-    
-
-    def get_valid_token_mask(self, captions: torch.Tensor) -> torch.Tensor:
-        if self.end_token is None:
-            # return equal lengths of MAX_TOKENS (default = 77)
-            return torch.ones_like(captions, type=torch.long)
-        
-        if self.start_token is not None and self.end_token is not None:
-            # openai tokenizer
-            mask = torch.where(captions > 0, 1, 0)
-            mask = torch.where(captions == self.start_token, 0, mask)
-            mask = torch.where(captions == self.end_token, 0, mask)
-        elif self.start_token is None and self.end_token is not None:
-            # siglip T5-based tokenizer
-            # end_token == 1
-            mask = torch.where(captions != self.end_token, 1, 0)
-        else:
-            raise ValueError("the tokenizer format is not supported")
-
-        return mask # (num_captions, max_caption_length)
-    
-
-    def get_item_simple(self, json_data):
-        if self.use_original_caption:
-            caption = str(json_data["caption"])
-        else:
-            caption = str(json_data["short_caption"])
-        caption = self.tokenize(caption)[0],     
-        return caption
-    
-    def _process_hn_nounphrases(self, hn_nounphrases):
-        def _is_valid(np):#
-            toks = np.lower().split()
-            if len(toks) == 1:
-                # single word
-                return False
-            
-            if len(toks) == 2 and toks[0] in ["a", "an", "the", "their", "his", "her", "my", "your", "our", "its"]:
-                # "a person", "his dog" ...
-                return False
-            
-            return True
-        
-        num_swapped = len(hn_nounphrases["swapped"])
-        num_masked = len(hn_nounphrases["masked"])
-        
-        if self.hn_np_balance and num_swapped > 0 and num_masked > 0 and num_masked != num_swapped:
-            min_num = min(num_swapped, num_masked)
-            swapped_nps = random.sample(hn_nounphrases["swapped"], k=min_num)
-            masked_nps = random.sample(hn_nounphrases["masked"], k=min_num)
-            hn_nps = swapped_nps + masked_nps
-        else:
-            hn_nps = hn_nounphrases["swapped"] + hn_nounphrases["masked"]
-
-        ret = [np for np in hn_nps if _is_valid(np)]
-        
-        return ret
-
-    def get_item_da(self, json_data):
-        captions = torch.stack([self.tokenize([str(json_data['short_caption'])])[0],
-                                self.tokenize([str(json_data['relation_aug_caption'])])[0],
-                                self.tokenize([str(json_data['adj_aug_caption'])])[0],
-                                self.tokenize([str(json_data['noun_aug_caption'])])[0],
-                                self.tokenize([str(json_data['verb_aug_caption'])])[0]])
-        valid_caption_mask = torch.tensor(json_data["valid_caption"])
-
-        if self.return_token_mask_caption and self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions)
-        elif self.return_token_mask_caption:
-            token_mask = self.get_valid_token_mask(captions[0:1, :])
-        elif self.return_token_mask_negative:
-            token_mask = self.get_valid_token_mask(captions[1:, :])
-        else:
-            token_mask = None
-
-        # get nounphrases if available
-        noun_phrases = None
-        if self.return_nounphrases and "nounphrases" in json_data:
-            nps = json_data['nounphrases']
-            if len(nps) == 0:
-                nps = [str(json_data["short_caption"])] # so training does not fail when there's no nounphrase
-            noun_phrases = self.tokenize(nps)
-            noun_phrases_mask = self.get_valid_token_mask(noun_phrases)
-
-        negative_nounphrases = None
-        if self.return_negative_nounphrases and "hn_nounphrases" in json_data:
-            hn_nps = self._process_hn_nounphrases(json_data['hn_nounphrases'])
-            if len(hn_nps) == 0:
-                # pick shortest negative caption from DA data
-                min_len = 10000
-                hn_cap = None
-                for key in ["relation_aug_caption", "adj_aug_caption", "noun_aug_caption", "verb_aug_caption"]:
-                    if len(str(json_data[key])) < min_len and str(json_data[key]) != "###":
-                        hn_cap = str(json_data[key])
-                        min_len = len(str(json_data[key]))
-                if hn_cap is None:
-                    hn_nps = None
-                else:
-                    hn_nps = [hn_cap] # so training does not fail when there's no nounphrase
-            if hn_nps is not None:
-                negative_nounphrases = self.tokenize(hn_nps)
-                negative_nounphrases_mask = self.get_valid_token_mask(negative_nounphrases)
-            else:
-                negative_nounphrases = []
-                negative_nounphrases_mask = []
-
-        
-        # Done. Returning
-        if token_mask is not None and noun_phrases is not None and negative_nounphrases is not None:
-            ret = (captions, valid_caption_mask, token_mask, noun_phrases, noun_phrases_mask, negative_nounphrases, negative_nounphrases_mask)
-        elif token_mask is None and noun_phrases is not None and negative_nounphrases is not None:
-            ret = (captions, valid_caption_mask, noun_phrases, noun_phrases_mask, negative_nounphrases, negative_nounphrases_mask)
-        elif token_mask is not None and noun_phrases is not None:
-            ret = (captions, valid_caption_mask, token_mask, noun_phrases, noun_phrases_mask)
-        elif token_mask is not None and noun_phrases is None:
-            ret = (captions, valid_caption_mask, token_mask)
-        elif token_mask is None and noun_phrases is not None:
-            ret = (captions, valid_caption_mask, noun_phrases, noun_phrases_mask)
-        else:
-            ret = (captions, valid_caption_mask)
-
-        return ret
-    
-
-    def __call__(self, json_data):
-        if self.extra_da:
-            return self.get_item_da(json_data)
-        else:
-            return self.get_item_simple(json_data)
-
-
-
-def get_cc30m_hn_np_custom_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None, **kwargs):
-    start_token = None
-    end_token = None
-    
-    if args.model == "ViT-B-32" and args.pretrained == "openai":
-        start_token = 49406
-        end_token = 49407
-    elif args.model == "ViT-B-16-SigLIP": # and args.pretrained == "webli":
-        end_token = 1
-    else:
-        if args.output_tokens:
-            raise RuntimeError(f"{args.model} from {args.pretrained} do not support returning raw token features")
-    
-    return_token_mask_caption = args.scan_loss
-    return_nounphrases = args.np_loss
-    return_negative_nounphrases = args.np_hard_negative_loss or args.np_hard_negative_flair_loss
-    complex_loader_mode = args.extra_da or args.np_loss or args.output_tokens
-
-    caption_loader = CC30mJsonProcessor_hn_np(tokenizer=tokenizer,
-                                        start_token=start_token,
-                                        end_token=end_token,
-                                        return_token_mask_caption=return_token_mask_caption,
-                                        return_token_mask_negative=return_token_mask_caption,
-                                        return_nounphrases=return_nounphrases,
-                                        return_negative_nounphrases=return_negative_nounphrases,
-                                        extra_da=complex_loader_mode,
-                                        hn_np_balance=args.hn_np_balance,
-                                        use_original_caption=args.use_original_caption)
-
-    input_shards = args.train_data if is_train else args.val_data
-    assert input_shards is not None
-    resampled = getattr(args, 'dataset_resampled', False) and is_train
-
-    num_samples, num_shards = get_dataset_size(input_shards)
-    if not num_samples:
-        if is_train:
-            num_samples = args.train_num_samples
-            if not num_samples:
-                raise RuntimeError(
-                    'Currently, number of dataset samples must be specified for training dataset. '
-                    'Please specify via `--train-num-samples` if no dataset length info present.')
-        else:
-            num_samples = args.val_num_samples or 0  # eval will just exhaust the iterator if not specified
-
-    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
-    
-    if resampled:
-        pipeline = [ResampledShards2(input_shards, deterministic=True, epoch=shared_epoch)]
-    else:
-        pipeline = [wds.SimpleShardList(input_shards)]
-
-    # at this point we have an iterator over all the shards
-    if is_train:
-        if not resampled:
-            pipeline.extend([
-                detshuffle2(
-                    bufsize=_SHARD_SHUFFLE_SIZE,
-                    initial=_SHARD_SHUFFLE_INITIAL,
-                    seed=args.seed,
-                    epoch=shared_epoch,
-                ),
-                wds.split_by_node,
-                wds.split_by_worker,
-            ])
-        pipeline.extend([
-            # at this point, we have an iterator over the shards assigned to each worker at each node
-            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
-            wds.shuffle(
-                bufsize=_SAMPLE_SHUFFLE_SIZE,
-                initial=_SAMPLE_SHUFFLE_INITIAL,
-            ),
-        ])
-    else:
-        pipeline.extend([
-            wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
-            wds.tarfile_to_samples(handler=log_and_continue),
-        ])
-    pipeline.extend([
-        wds.select(filter_no_caption_or_no_image),
-        wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(image="jpg;png;jpeg;webp", text="json"),
-        wds.map_dict(image=preprocess_img, text=caption_loader),
-        wds.to_tuple("image", "text"),
-        wds.batched(args.batch_size, partial=not is_train, 
-                    collation_fn=CC3m_custom_collate_fn(return_token_mask=return_token_mask_caption, 
-                                                        return_nounphrases=return_nounphrases,
-                                                        return_negative_nounphrases=return_negative_nounphrases)
-                    ) if complex_loader_mode else wds.batched(args.batch_size, partial=not is_train, collation_fn=simple_collate_fn),
-    ])
-
-    dataset = wds.DataPipeline(*pipeline)
-    if is_train:
-        if not resampled:
-            assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
-        # roll over and repeat a few samples to get same number of full batches on each node
-        round_fn = math.floor if floor else math.ceil
-        global_batch_size = args.batch_size * args.world_size
-        num_batches = round_fn(num_samples / global_batch_size)
-        num_workers = max(1, args.workers)
-        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
-        num_batches = num_worker_batches * num_workers
-        num_samples = num_batches * global_batch_size
-        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
-    else:
-        # last batches are partial, eval is done on single (master) node
-        num_batches = math.ceil(num_samples / args.batch_size)
-
-    dataloader = wds.WebLoader(
-        dataset,
-        batch_size=None,
-        shuffle=False,
-        num_workers=args.workers,
-        persistent_workers=True,
-    )
-
-    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
-    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
-    # if is_train:
-    #     # roll over and repeat a few samples to get same number of full batches on each node
-    #     global_batch_size = args.batch_size * args.world_size
-    #     num_batches = math.ceil(num_samples / global_batch_size)
-    #     num_workers = max(1, args.workers)
-    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
-    #     num_samples = num_batches * global_batch_size
-    #     dataloader = dataloader.with_epoch(num_batches)
-    # else:
-    #     # last batches are partial, eval is done on single (master) node
-    #     num_batches = math.ceil(num_samples / args.batch_size)
 
     # add meta-data to dataloader instance for convenience
     dataloader.num_batches = num_batches
@@ -1685,14 +951,10 @@ def get_cc30m_hn_np_custom_dataset(args, preprocess_img, is_train, epoch=0, floo
 def get_dataset_fn(data_path, dataset_type):
     if dataset_type == "webdataset":
         return get_wds_dataset
-    elif dataset_type == "npy":
-        return get_npy_dataset
-    elif dataset_type == "cc3m_custom":
-        return get_cc3m_custom_dataset
-    elif dataset_type == "cc30m_custom":
-        return get_cc30m_custom_dataset
-    elif dataset_type == "cc30m_custom_hn_np":
-        return get_cc30m_hn_np_custom_dataset
+    elif dataset_type == "cc3m_custom_np_pkl":
+        return get_cc3m_custom_np_pkl_dataset
+    elif dataset_type == "cc30m_custom_np_wds":
+        return get_cc3m_custom_np_wds_dataset
     elif dataset_type == "json":
         return get_json_dataset
     elif dataset_type == "csv":

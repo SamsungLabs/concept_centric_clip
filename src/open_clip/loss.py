@@ -912,7 +912,7 @@ class C2LIP_Loss(nn.Module):
         labels.fill_diagonal_(1.) # diagonal elements are 1 - positive
         contrastive_loss = -F.logsigmoid(labels * logits_per_image).sum() / logits_per_image.shape[1] #-torch.mean(F.logsigmoid(labels * logits_per_image))
             
-        loss_outputs = {"siglip_loss": contrastive_loss}
+        loss_outputs = {"contrastive_loss": contrastive_loss}
         total_loss = contrastive_loss
         
         if self.npc_loss or self.xac_loss:
@@ -977,7 +977,7 @@ class C2LIP_Loss(nn.Module):
 
         #return total_loss, thresholds, cmr_loss, imc_loss
         if output_dict:
-            loss_outputs["contrastive_loss"] = total_loss
+            loss_outputs["loss"] = total_loss
             return loss_outputs
         
         forward_outputs = [total_loss, contrastive_loss]

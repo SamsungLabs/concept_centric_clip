@@ -61,7 +61,7 @@ def backward(total_loss, scaler):
         total_loss.backward()
 
 
-def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=None, prev_thresholds=None):
+def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
     input_dtype = get_input_dtype(args.precision)
@@ -77,8 +77,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
 
     if args.accum_freq > 1:
         accum_images, accum_texts, accum_features = [], [], {}
-        accum_valid_caption_mask, accum_text_token_mask, accum_nounphrases, accum_nounphrases_token_mask, accum_nounphrases_indices = [], [], [], [], []
-        accum_hn_nounphrases, accum_hn_nounphrases_token_mask, accum_hn_nounphrases_indices = [], [], []
+        accum_nounphrases, accum_nounphrases_indices = [], []
 
     losses_m = {}
     batch_time_m = AverageMeter()
@@ -86,19 +85,6 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
     end = time.time()
 
     # Optimize by directly setting thresholds based on conditions
-    if args.cmr_loss:
-        # Use a ternary conditional operator to set thresholds based on the type of threshold
-        if prev_thresholds is not None:
-            thresholds = prev_thresholds
-        else:
-            thresholds = args.fixed_threshold_value if args.threshold_type == "fixed" else 0.0
-    else:
-        # Without cmr loss
-        thresholds = None
-
-    #cmr_loss=None
-    #imc_loss=None
-
     for i, batch in enumerate(dataloader):
         i_accum = i // args.accum_freq
         step = num_batches_per_epoch * epoch + i_accum
@@ -106,79 +92,20 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         if not args.skip_scheduler:
             scheduler(step)
 
-        text_token_mask = None
         nounphrases = None
         nounphrases_indices = None
-        hn_nounphrases = None
-        hn_nounphrases_indices = None
-
-        if args.extra_da or args.scan_loss or args.np_loss:
-            if args.scan_loss and args.np_loss: # SCAN loss & nounphrases loss
-                if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                    images, texts, valid_caption_mask, text_token_mask, nounphrases, nounphrases_token_mask, nounphrases_indices, hn_nounphrases, hn_nounphrases_token_mask, hn_nounphrases_indices = batch
-                    
-                    # true nounphrases
-                    nounphrases = nounphrases.to(device=device, non_blocking=True)
-                    if args.np_token_token_loss:
-                        nounphrases_token_mask = nounphrases_token_mask.to(device=device, non_blocking=True)
-                    nounphrases_indices = nounphrases_indices.to(device=device, non_blocking=True)
-                    
-                    # hard negative nounphrases
-                    hn_nounphrases = hn_nounphrases.to(device=device, non_blocking=True)
-                    hn_nounphrases_indices = hn_nounphrases_indices.to(device=device, non_blocking=True)
-                else:
-                    images, texts, valid_caption_mask, text_token_mask, nounphrases, nounphrases_token_mask, nounphrases_indices = batch
-                    nounphrases = nounphrases.to(device=device, non_blocking=True)
-                    if args.np_token_token_loss:
-                        nounphrases_token_mask = nounphrases_token_mask.to(device=device, non_blocking=True)
-                    nounphrases_indices = nounphrases_indices.to(device=device, non_blocking=True)
-                
-                if not args.extra_da:
-                    text_token_mask = text_token_mask[:images.shape[0]] # remove the DA text masks
-                text_token_mask = text_token_mask.to(device=device, non_blocking=True)
-                
-            elif args.scan_loss: # for SCAN loss only
-                images, texts, valid_caption_mask, text_token_mask = batch
-                if not args.extra_da:
-                    text_token_mask = text_token_mask[:images.shape[0]] # remove the DA text masks
-                text_token_mask = text_token_mask.to(device=device, non_blocking=True)
-            elif args.np_loss: # fo NP loss only
-                if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                    images, texts, valid_caption_mask, nounphrases, nounphrases_token_mask, nounphrases_indices, hn_nounphrases, hn_nounphrases_token_mask, hn_nounphrases_indices = batch
-                    
-                    # true nounphrases
-                    nounphrases = nounphrases.to(device=device, non_blocking=True)
-                    if args.np_token_token_loss:
-                        nounphrases_token_mask = nounphrases_token_mask.to(device=device, non_blocking=True)
-                    nounphrases_indices = nounphrases_indices.to(device=device, non_blocking=True)
-
-                    # hard negative nounphrases
-                    hn_nounphrases = hn_nounphrases.to(device=device, non_blocking=True)
-                    hn_nounphrases_indices = hn_nounphrases_indices.to(device=device, non_blocking=True)
-                else:
-                    images, texts, valid_caption_mask, nounphrases, nounphrases_token_mask, nounphrases_indices = batch
-                    nounphrases = nounphrases.to(device=device, non_blocking=True)
-                    if args.np_token_token_loss:
-                        nounphrases_token_mask = nounphrases_token_mask.to(device=device, non_blocking=True)
-                    nounphrases_indices = nounphrases_indices.to(device=device, non_blocking=True)
-            else:
-                images, texts, valid_caption_mask = batch # CE loss only
-            
-            if args.extra_da:
-                valid_caption_mask = valid_caption_mask[:,1:]
-                valid_caption_mask = valid_caption_mask.to(device=device, non_blocking=True)
-            else:
-                valid_caption_mask = None
-                texts = texts[:images.shape[0]]
+        
+        if args.npc_loss or args.xac_loss:
+            # For C2LIP
+            images, texts, nounphrases, nounphrases_indices = batch
+            nounphrases = nounphrases.to(device=device, non_blocking=True)
+            nounphrases_indices = nounphrases_indices.to(device=device, non_blocking=True)
         elif args.distill:
             images, images_distill, texts, texts_distill = batch
             images_distill = images_distill.to(device=device, dtype=input_dtype, non_blocking=True)
             texts_distill = texts_distill.to(device=device, non_blocking=True)
         else:
             images, texts = batch[0], batch[1]
-            if images.shape[0] != texts.shape[0]:
-                # texts tensor includes hard negatives, remove them
-                texts = texts[:images.shape[0]]
 
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
@@ -195,64 +122,22 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         optimizer.zero_grad()
 
         if args.accum_freq == 1:
-            # np_instance_loss = None
-            # np_token_loss = None
-            # np_intramodal_loss = None
-            # np_token_token_loss = None
-            np_loss = None
-
             with autocast():
-                model_out = model(images, texts, normalize=not args.loss_feature_norm)
+                model_out = model(images, texts, normalize=not args.loss_feature_norm) # image, text & token features
 
-                if args.np_loss:
-                    nounphrases_features = model(text=nounphrases, output_tokens=args.np_token_token_loss, normalize=not args.loss_feature_norm)
-                    nounphrases_token_features = None
-                    if args.np_token_token_loss:
-                        nounphrases_features, nounphrases_token_features = nounphrases_features
+                if args.npc_loss or args.xac_loss:
+                    nounphrases_features = model(text=nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
+                    model_out["nounphrases_features"] = nounphrases_features
+                    model_out["nounphrases_indices"] = nounphrases_indices
 
-                    if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                        # negative nounphrases
-                        assert len(hn_nounphrases.shape) == 2, f"Shape of hn_np: {hn_nounphrases.shape}"
-                        hn_nounphrases_features = model(text=hn_nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
-                    
-                logit_scale = model_out["logit_scale"]
-                
-                if args.extra_da or args.scan_loss or args.np_loss or args.flair_loss:
-                    # provide additional inputs to calculate losses
-                    if args.extra_da:
-                        model_out["thresholds"] = thresholds
-                        model_out["valid_caption_mask"] = valid_caption_mask
+                    if args.xac_loss:
+                        assert "image_tokens" in model_out
+                        model_out.pop("text_tokens", None)
 
-                    if "image_tokens" in model_out and "text_tokens" in model_out and not args.scan_ce_hard_negative:
-                        # remove the hard negative texts from text_tokens
-                        model_out["text_tokens"] = model_out["text_tokens"][:model_out["image_tokens"].shape[0]]
-                    if "text_tokens" in model_out and not args.scan_loss:
-                        model_out.pop("text_tokens")
-                    
-                    if args.output_tokens and args.scan_loss:
-                        model_out["text_token_mask"] = text_token_mask
-                    
-                    if args.np_loss:
-                        model_out["nounphrases_features"] = nounphrases_features
-                        model_out["nounphrases_indices"] = nounphrases_indices
-                        if args.np_token_token_loss:
-                            model_out["nounphrases_token_features"] = nounphrases_token_features
-                            model_out["nounphrases_token_mask"] = nounphrases_token_mask
-                        if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                            model_out["hn_nounphrases_features"] = hn_nounphrases_features
-                            model_out["hn_nounphrases_indices"] = hn_nounphrases_indices
-                    
+                    # logit_scale = model_out["logit_scale"]                  
                     losses = loss(**model_out, output_dict=True)
 
-                    # extract losses
-                    thresholds = losses.pop("thresholds", None)
-                    np_loss = losses.pop("np_loss", None)
-                    #imc_loss = losses["imc_loss"]
-                    #cmr_loss = losses["cmr_loss"]
-                    # np_instance_loss = losses.pop("np_instance_loss", None)
-                    # np_token_loss = losses.pop("np_token_loss", None)
-                    # np_intramodal_loss = losses.pop("np_intramodal_loss", None)
-                    # np_token_token_loss = losses.pop("np_token_token_loss", None)
+                    total_loss = losses["loss"]
                 else:
                     if args.distill:
                         with torch.no_grad():
@@ -260,78 +145,31 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                         model_out.update({f'dist_{k}': v for k, v in dist_model_out.items()})
                     losses = loss(**model_out, output_dict=True)
 
-                total_loss = sum(losses.values())
+                    total_loss = sum(losses.values())
+                    
+                    losses["loss"] = total_loss # for logging
                 
             backward(total_loss, scaler)
-
-            # scale imc_loss & cmr_loss for logging
-            if "imc_loss" in losses:
-                losses["imc_loss"] = losses["imc_loss"] / args.imc_loss_weight
-            if "cmr_loss" in losses:
-                losses["cmr_loss"] = losses["cmr_loss"] / args.cmr_loss_weight
-            if "scan_loss" in losses:
-                losses["scan_loss"] = losses["scan_loss"] / args.scan_loss_weight
-            if "np_instance_loss" in losses:
-                losses["np_instance_loss"] = losses["np_instance_loss"] / args.np_loss_weight
-            if "np_token_loss" in losses:
-                losses["np_token_loss"] = losses["np_token_loss"] / args.np_token_loss_scale
-            if "np_intramodal_loss" in losses:
-                losses["np_intramodal_loss"] = losses["np_intramodal_loss"] / args.np_intramodal_loss_scale
-            if "np_token_token_loss" in losses:
-                losses["np_token_token_loss"] = losses["np_token_token_loss"] / args.np_token_token_loss_scale
-            # new nounphrases losses
-            if "np_flair_loss" in losses:
-                losses["np_flair_loss"] = losses["np_flair_loss"] / args.np_flair_loss_scale
-            if "np_hard_negative_loss" in losses:
-                losses["np_hard_negative_loss"] = losses["np_hard_negative_loss"] / args.np_hard_negative_loss_scale
-            if "np_hard_negative_flair_loss" in losses:
-                losses["np_hard_negative_flair_loss"] = losses["np_hard_negative_flair_loss"] / args.np_hard_negative_flair_loss_scale
-            
-            if "flair_loss" in losses:
-                losses["flair_loss"] = losses["flair_loss"] / args.flair_loss_scale
-            
-            if np_loss is not None:
-                losses["np_loss"] = np_loss
-            losses["loss"] = total_loss
         else:
-            np_loss = None
+            ######### GRADIENT CACHE #########
             # First, cache the features without any gradient tracking.
             with torch.no_grad():
                 with autocast():
                     model_out = model(images, texts, normalize=not args.loss_feature_norm)
 
-                    if args.np_loss:
-                        nounphrases_features = model(text=nounphrases, output_tokens=args.np_token_token_loss, normalize=not args.loss_feature_norm)
-                        nounphrases_token_features = None
-                        if args.np_token_token_loss:
-                            nounphrases_features, nounphrases_token_features = nounphrases_features
+                    if args.npc_loss or args.xac_loss:
+                        nounphrases_features = model(text=nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
+                        model_out["nounphrases_features"] = nounphrases_features
+                        model_out["nounphrases_indices"] = nounphrases_indices
 
+                        if args.xac_loss:
+                            assert "image_tokens" in model_out
+                            model_out.pop("text_tokens", None)
+                        
                     for f in ("logit_scale", "logit_bias"):
                         model_out.pop(f, None)
 
-                    ## adding more features for new losses
-                    if args.extra_da or args.output_tokens or args.np_loss:
-                        # provide additional inputs to calculate losses
-                        # model_out["thresholds"] = thresholds
-                        # model_out["valid_caption_mask"] = valid_caption_mask
-
-                        if "image_tokens" in model_out and "text_tokens" in model_out and not args.scan_ce_hard_negative:
-                            # remove the hard negative texts from text_tokens
-                            model_out["text_tokens"] = model_out["text_tokens"][:model_out["image_tokens"].shape[0]]
-                        if "text_tokens" in model_out and not args.scan_loss:
-                            model_out.pop("text_tokens")
-                        
-                        # if args.output_tokens and args.scan_loss:
-                        #     model_out["text_token_mask"] = text_token_mask
-                        
-                        if args.np_loss:
-                            model_out["nounphrases_features"] = nounphrases_features
-                            # model_out["nounphrases_indices"] = nounphrases_indices
-                            if args.np_token_token_loss:
-                                model_out["nounphrases_token_features"] = nounphrases_token_features
-                                # model_out["nounphrases_token_mask"] = accum_nounphrases_token_mask[j]
-                    ## end adding more features for new losses
-
+                    # store features
                     for key, val in model_out.items():
                         if key in accum_features:
                             accum_features[key].append(val)
@@ -340,18 +178,11 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
 
                 accum_images.append(images)
                 accum_texts.append(texts)
-                if args.extra_da:
-                    accum_valid_caption_mask.append(valid_caption_mask)
-                if args.output_tokens and args.scan_loss:
-                    accum_text_token_mask.append(text_token_mask)
-                if args.np_loss:
+                
+                if args.npc_loss or args.xac_loss:
                     accum_nounphrases.append(nounphrases)
-                    accum_nounphrases_token_mask.append(nounphrases_token_mask)
                     accum_nounphrases_indices.append(nounphrases_indices)
-                    accum_hn_nounphrases.append(hn_nounphrases)
-                    accum_hn_nounphrases_token_mask.append(hn_nounphrases_token_mask)
-                    accum_hn_nounphrases_indices.append(hn_nounphrases_indices)
-
+                    
             # If (i + 1) % accum_freq is not zero, move on to the next batch.
             if ((i + 1) % args.accum_freq) > 0:
                 # FIXME this makes data time logging unreliable when accumulating
@@ -368,41 +199,16 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                 with autocast():
                     model_out = model(images, texts, normalize=not args.loss_feature_norm)
 
-                    if args.np_loss:
+                    if args.npc_loss or args.xac_loss:
                         nounphrases = accum_nounphrases[j]
-                        nounphrases_features = model(text=nounphrases, output_tokens=args.np_token_token_loss, normalize=not args.loss_feature_norm)
-                        nounphrases_token_features = None
-                        if args.np_token_token_loss:
-                            nounphrases_features, nounphrases_token_features = nounphrases_features
+                        nounphrases_features = model(text=nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
 
-                        if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                            # negative nounphrases
-                            hn_nounphrases_features = model(text=hn_nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
+                        if args.xac_loss:
+                            assert "image_tokens" in model_out
+                            model_out.pop("text_tokens", None)
 
-                    if args.extra_da or args.output_tokens or args.np_loss:
-                        # provide additional inputs to calculate losses
-                        # model_out["thresholds"] = thresholds
-                        # model_out["valid_caption_mask"] = valid_caption_mask
-
-                        if "image_tokens" in model_out and "text_tokens" in model_out and not args.scan_ce_hard_negative:
-                            # remove the hard negative texts from text_tokens
-                            model_out["text_tokens"] = model_out["text_tokens"][:model_out["image_tokens"].shape[0]]
-                        if "text_tokens" in model_out and not args.scan_loss:
-                            model_out.pop("text_tokens")
+                        model_out["nounphrases_features"] = nounphrases_features
                         
-                        # if args.output_tokens and args.scan_loss:
-                        #     model_out["text_token_mask"] = accum_text_token_mask[j]
-                        
-                        if args.np_loss:
-                            model_out["nounphrases_features"] = nounphrases_features
-                            # model_out["nounphrases_indices"] = accum_nounphrases_indices[j]
-                            if args.np_token_token_loss:
-                                model_out["nounphrases_token_features"] = nounphrases_token_features
-                                # model_out["nounphrases_token_mask"] = accum_nounphrases_token_mask[j].to(device=device, non_blocking=True)
-                            
-                            if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                                model_out["hn_nounphrases_features"] = hn_nounphrases_features
-
                     inputs_no_accum = {}
                     inputs_no_accum["logit_scale"] = logit_scale = model_out.pop("logit_scale")
                     if "logit_bias" in model_out:
@@ -413,61 +219,22 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                         accumulated = accum_features[key]
                         inputs[key] = torch.cat(accumulated[:j] + [model_out[key]] + accumulated[j + 1:])
                     
-                    if args.extra_da:
-                        inputs["thresholds"] = thresholds
-                        inputs["valid_caption_mask"] = torch.cat(accum_valid_caption_mask)
-                    if args.output_tokens and args.scan_loss:
-                        inputs["text_token_mask"] = torch.cat(accum_text_token_mask)
-                    if args.np_loss:
+                    if args.npc_loss or args.xac_loss:
                         inputs["nounphrases_indices"] = torch.cat(accum_nounphrases_indices)
-                        if args.np_token_token_loss:
-                            inputs["nounphrases_token_mask"] = torch.cat(accum_nounphrases_token_mask)
                         
-                        if args.np_hard_negative_loss or args.np_hard_negative_flair_loss:
-                            inputs["hn_nounphrases_indices"] = torch.cat(accum_hn_nounphrases_indices)
-
                     losses = loss(**inputs, **inputs_no_accum, output_dict=True)
                     del inputs
                     del inputs_no_accum
 
                     # extract losses
-                    thresholds = losses.pop("thresholds", None)
-                    np_loss = losses.pop("np_loss", None)
-
-                    total_loss = sum(losses.values())
+                    if args.npc_loss or args.xac_loss:
+                        total_loss= losses["loss"]
+                    else:
+                        total_loss = sum(losses.values())
+                        losses["loss"] = total_loss
                     
-
                 backward(total_loss, scaler)
 
-                # scale imc_loss & cmr_loss for logging
-                if "imc_loss" in losses:
-                    losses["imc_loss"] = losses["imc_loss"] / args.imc_loss_weight
-                if "cmr_loss" in losses:
-                    losses["cmr_loss"] = losses["cmr_loss"] / args.cmr_loss_weight
-                if "scan_loss" in losses:
-                    losses["scan_loss"] = losses["scan_loss"] / args.scan_loss_weight
-                if "np_instance_loss" in losses:
-                    losses["np_instance_loss"] = losses["np_instance_loss"] / args.np_loss_weight
-                if "np_token_loss" in losses:
-                    losses["np_token_loss"] = losses["np_token_loss"] / args.np_token_loss_scale
-                if "np_intramodal_loss" in losses:
-                    losses["np_intramodal_loss"] = losses["np_intramodal_loss"] / args.np_intramodal_loss_scale
-                if "np_token_token_loss" in losses:
-                    losses["np_token_token_loss"] = losses["np_token_token_loss"] / args.np_token_token_loss_scale
-                # new nounphrases losses
-                if "np_flair_loss" in losses:
-                    losses["np_flair_loss"] = losses["np_flair_loss"] / args.np_flair_loss_scale
-                if "np_hard_negative_loss" in losses:
-                    losses["np_hard_negative_loss"] = losses["np_hard_negative_loss"] / args.np_hard_negative_loss_scale
-                if "np_hard_negative_flair_loss" in losses:
-                    losses["np_hard_negative_flair_loss"] = losses["np_hard_negative_flair_loss"] / args.np_hard_negative_flair_loss_scale
-                    
-                if "flair_loss" in losses:
-                    losses["flair_loss"] = losses["flair_loss"] / args.flair_loss_scale
-                
-                if np_loss is not None:
-                    losses["np_loss"] = np_loss
-                losses["loss"] = total_loss
 
         if scaler is not None:
             if args.horovod:
@@ -491,7 +258,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         # reset gradient accum, if enabled
         if args.accum_freq > 1:
             accum_images, accum_texts, accum_features = [], [], {}
-            accum_valid_caption_mask, accum_text_token_mask, accum_nounphrases, accum_nounphrases_token_mask, accum_nounphrases_indices = [], [], [], [], []
+            accum_nounphrases, accum_nounphrases_indices = [], []
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
         with torch.no_grad():
@@ -555,8 +322,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
             batch_time_m.reset()
             data_time_m.reset()
     # end for
-    # for CE-CLIP CMR loss
-    return thresholds
+    return 
 
 
 def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
