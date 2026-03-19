@@ -787,7 +787,7 @@ class CC3m_NP_PKL_Dataset(Dataset):
         caption = sample["captions"]["shortLLA_captions"]
         caption = self.tokenize(caption)[0]
 
-        nounphrases = sample["caption"]["nounphrases"]
+        nounphrases = sample["nounphrases"]
         if not nounphrases:
             nounphrases = [caption]
         nounphrases = self.tokenize(nounphrases)

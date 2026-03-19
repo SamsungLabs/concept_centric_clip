@@ -124,6 +124,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         if args.accum_freq == 1:
             with autocast():
                 model_out = model(images, texts, normalize=not args.loss_feature_norm) # image, text & token features
+                logit_scale = model_out["logit_scale"]  
 
                 if args.npc_loss or args.xac_loss:
                     nounphrases_features = model(text=nounphrases, output_tokens=False, normalize=not args.loss_feature_norm)
@@ -134,7 +135,6 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                         assert "image_tokens" in model_out
                         model_out.pop("text_tokens", None)
 
-                    # logit_scale = model_out["logit_scale"]                  
                     losses = loss(**model_out, output_dict=True)
 
                     total_loss = losses["loss"]

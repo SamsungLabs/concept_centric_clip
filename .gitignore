@@ -162,4 +162,5 @@ cython_debug/
 #.idea/
 
 data_dir/
-.vscode/launch.json
+.vscode/
+*/logs/*

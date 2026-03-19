@@ -503,7 +503,7 @@ def parse_args(args):
     ########## Noun-phrase loss ##########
     parser.add_argument("--npc-loss", default=False, action="store_true", help="enable nounphrase NPC loss")
     parser.add_argument("--npc-loss-scale", type=float, default=1., help="weight of Noun-phrase NPC loss")
-    parser.add_argument("--xac-loss", dest="np_flair_loss", default=False, action="store_true", help="enable cross-attended nounphrase XAC loss")
+    parser.add_argument("--xac-loss", default=False, action="store_true", help="enable cross-attended nounphrase XAC loss")
     parser.add_argument("--xac-loss-scale", type=float, default=0.01)
     
 
@@ -531,6 +531,9 @@ def parse_args(args):
             setattr(args, name, val)
     
     ####### new ######
+    if (args.npc_loss or args.xac_loss) and not args.siglip:
+        raise ValueError("Currently, NPC loss and XAC loss are only implemented for SigLIP model")
+
     if args.xac_loss and not args.output_tokens:
         print("If XAC loss is used, must also enable [--output_tokens] option. This flag will now be enabled.")
         args.output_tokens = True

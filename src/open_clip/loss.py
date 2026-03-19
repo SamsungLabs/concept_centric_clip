@@ -913,7 +913,7 @@ class C2LIP_Loss(nn.Module):
         contrastive_loss = -F.logsigmoid(labels * logits_per_image).sum() / logits_per_image.shape[1] #-torch.mean(F.logsigmoid(labels * logits_per_image))
             
         loss_outputs = {"contrastive_loss": contrastive_loss}
-        total_loss = contrastive_loss
+        total_loss += contrastive_loss
         
         if self.npc_loss or self.xac_loss:
             if self.world_size > 1:

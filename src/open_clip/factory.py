@@ -335,15 +335,8 @@ def create_loss(args):
             # Nounphrase loss
             npc_loss=args.npc_loss,
             npc_loss_scale=args.npc_loss_scale,
-            xac_loss=args.np_xac_loss,
-            np_flair_loss_scale=args.np_flair_loss_scale,
-            np_hard_negative_loss=args.np_hard_negative_loss,
-            np_hard_negative_loss_scale=args.np_hard_negative_loss_scale,
-            np_hard_negative_flair_loss=args.np_hard_negative_flair_loss,
-            np_hard_negative_flair_loss_scale=args.np_hard_negative_flair_loss_scale,
-            ####################################################
-            flair_loss=args.flair_loss,
-            flair_loss_scale=args.flair_loss_scale,
+            xac_loss=args.xac_loss,
+            xac_loss_scale=args.xac_loss_scale,
             ####################################################
             loss_feature_norm=args.loss_feature_norm
         )
