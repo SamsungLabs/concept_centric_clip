@@ -1,7 +1,7 @@
-# Implementation of the paper
-**"No Hard Negatives Required: Concept Centric Learning Leads to Compositionality without Degrading Zero-shot Capabilities of Contrastive Models"**
+# Implementation of the paper (CVPR 2026)
+## **"No Hard Negatives Required: Concept Centric Learning Leads to Compositionality without Degrading Zero-shot Capabilities of Contrastive Models"**
 
-H. X. Pham, D. Hoffmann, R. Guerrero and B. Martinez, CVPR 2026.
+H. X. Pham, D. Hoffmann, R. Guerrero and B. Martinez
 
 # Environment
 Our code is developed from the common Open_CLIP github repo, so if you have an exising environment prepared for Open_CLIP, our code should work out of the box. Otherwise, please install the Python libraries from
