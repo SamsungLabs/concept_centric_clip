@@ -39,8 +39,6 @@ from training.file_utils import pt_load, check_exists, start_sync_process, remot
 
 import os
 
-os.environ["WANDB_API_KEY"] = "aa52ba01d444baf561163970c3616e4bf9173a6a"
-
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
 
